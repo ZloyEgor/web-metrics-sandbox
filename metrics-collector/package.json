@@ -1,0 +1,20 @@
+{
+  "name": "metrics-collector",
+  "version": "1.0.0",
+  "description": "Backend service for collecting Lighthouse metrics and managing Docker containers",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": ["lighthouse", "metrics", "docker"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "lighthouse": "^11.4.0",
+    "chrome-launcher": "^1.1.0"
+  }
+}
