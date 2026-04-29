@@ -66,14 +66,22 @@ app.get('/api/lighthouse', async (req, res) => {
       chromeFlags: ['--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
     });
 
-    const options = {
-      logLevel: 'info',
+    // Tightened settings for serverless environments where the default
+    // 45s networkidle wait often never resolves. We cap each phase, drop
+    // screenshots/full-page-screenshot which inflate response size and
+    // sometimes hang, and skip a few audits that need real network I/O.
+    const flags = {
+      logLevel: 'error',
       output: 'json',
-      onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo', 'pwa'],
-      port: chrome.port
+      onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
+      port: chrome.port,
+      maxWaitForFcp: 15000,
+      maxWaitForLoad: 30000,
+      disableFullPageScreenshot: true,
+      skipAudits: ['screenshot-thumbnails', 'final-screenshot', 'full-page-screenshot']
     };
 
-    const runnerResult = await lighthouse(url, options);
+    const runnerResult = await lighthouse(url, flags);
     
     // Extract the results
     const { lhr } = runnerResult;
