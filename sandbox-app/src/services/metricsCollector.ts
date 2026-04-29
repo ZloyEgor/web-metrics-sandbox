@@ -22,12 +22,19 @@ export const collectLighthouseMetrics = async (
   try {
     const url = getPlatformUrl(platform);
     const response = await fetch(`${API_BASE_URL}/api/lighthouse?url=${encodeURIComponent(url)}`);
-    
+
     if (!response.ok) {
       throw new Error(`Lighthouse API returned ${response.status}`);
     }
-    
-    const data = await response.json();
+
+    // Backend streams keep-alive whitespace lines while Lighthouse runs and
+    // appends the JSON payload as the final non-empty line. We must therefore
+    // read the full response as text and parse the last meaningful line.
+    const text = await response.text();
+    const finalLine = text.split('\n').map(l => l.trim()).filter(Boolean).pop();
+    if (!finalLine) throw new Error('Empty Lighthouse response');
+    const data = JSON.parse(finalLine);
+    if (data.error) throw new Error(data.message || data.error);
     
     return {
       performance: Math.round((data.categories.performance?.score || 0) * 100),

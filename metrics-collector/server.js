@@ -14,33 +14,47 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: Date.now() });
 });
 
-// Lighthouse metrics endpoint
+// Lighthouse metrics endpoint.
+// Streams keep-alive whitespace while Lighthouse runs so intermediate
+// proxies (e.g. Yandex Serverless Containers' frontend) don't drop the
+// connection due to idle timeout, then writes the JSON payload on a
+// final line. Clients can JSON.parse(text.trim().split('\n').pop()).
 app.get('/api/lighthouse', async (req, res) => {
   const { url } = req.query;
-  
+
   if (!url) {
     return res.status(400).json({ error: 'URL parameter is required' });
   }
-  
+
   let chrome;
-  
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'no-store');
+  // Disable nginx-style buffering on intermediate proxies.
+  res.setHeader('X-Accel-Buffering', 'no');
+
+  // Periodically write a single space + newline as a keep-alive heartbeat
+  // until Lighthouse finishes. JSON.parse will choke on these, so the
+  // client must take the LAST non-empty line.
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) res.write(' \n');
+  }, 5000);
+
   try {
     console.log(`Running Lighthouse for ${url}...`);
-    
-    // Launch Chrome
+
     chrome = await chromeLauncher.launch({
       chromePath: process.env.CHROME_PATH || undefined,
       chromeFlags: ['--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
     });
-    
-    // Run Lighthouse
+
     const options = {
       logLevel: 'info',
       output: 'json',
       onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo', 'pwa'],
       port: chrome.port
     };
-    
+
     const runnerResult = await lighthouse(url, options);
     
     // Extract the results
@@ -81,7 +95,7 @@ app.get('/api/lighthouse', async (req, res) => {
         .slice(0, 10);
     };
 
-    res.json({
+    const payload = {
       url: lhr.finalUrl,
       fetchTime: lhr.fetchTime,
       categories: {
@@ -125,14 +139,20 @@ app.get('/api/lighthouse', async (req, res) => {
         'best-practices': getFailedAudits('best-practices'),
         seo: getFailedAudits('seo')
       }
-    });
-    
+    };
+
+    clearInterval(heartbeat);
+    res.write('\n' + JSON.stringify(payload) + '\n');
+    res.end();
   } catch (error) {
     console.error('Lighthouse error:', error);
-    res.status(500).json({ 
-      error: 'Failed to run Lighthouse',
-      message: error.message 
-    });
+    clearInterval(heartbeat);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to run Lighthouse', message: error.message });
+    } else {
+      res.write('\n' + JSON.stringify({ error: 'Failed to run Lighthouse', message: error.message }) + '\n');
+      res.end();
+    }
   } finally {
     if (chrome) {
       await chrome.kill();
