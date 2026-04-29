@@ -1,5 +1,5 @@
-import Dexie, { Table } from 'dexie';
-import { MetricsRecord, Platform } from '../types';
+import Dexie, { type Table } from 'dexie';
+import type { MetricsRecord, Platform } from '../types';
 
 export class MetricsDatabase extends Dexie {
   platforms!: Table<Platform, string>;

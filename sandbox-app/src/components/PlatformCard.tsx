@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { PlatformStatus, MetricsRecord } from '../types';
+import type { Platform, PlatformStatus, MetricsRecord } from '../types';
 import { collectAllMetrics } from '../services/metricsCollector';
 import { saveMetrics } from '../services/db';
 import MetricBadge from './MetricBadge';

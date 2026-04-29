@@ -30,9 +30,83 @@
 
 ## Инструкция по развертыванию
 
+### Локальный запуск (dev-режим)
+
 Автоматический запуск всех компонентов системы осуществляется исполнением скрипта:
 ```
 ./start.sh
+```
+
+### Локальный запуск через Docker
+
+В корне репозитория есть `docker-compose.yml`, собирающий оба образа и связывающий фронтенд с бэкендом:
+
+```
+docker compose up --build
+```
+
+После запуска:
+- Frontend: http://localhost:8080
+- Backend:  http://localhost:4000
+
+## Контейнеризация
+
+Приложение состоит из двух самостоятельных образов:
+
+- `metrics-collector/Dockerfile` — Node.js 20 на базе Debian slim с установленным Chromium для запуска Lighthouse. Слушает порт `4000`. Эндпоинты `/api/docker/*` в этой сборке отключены (возвращают `503`), поскольку они полагаются на наличие сокета Docker рядом с процессом.
+- `sandbox-app/Dockerfile` — мультистадийная сборка: Node 20 для `npm run build`, затем `nginx:1.27-alpine` для отдачи статики на порту `8080`. URL бэкенда задаётся build-time аргументом `VITE_API_URL` и встраивается в собранный SPA.
+
+## CI/CD
+
+Конвейер описан в [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml) и состоит из двух джоб:
+
+1. `lint-build` — выполняется на каждый push и pull request: `npm ci`, `npm run lint`, `npm run build` для фронтенда и `node --check server.js` для бэкенда.
+2. `deploy` — выполняется только при push в `main`: логин в Yandex Container Registry, сборка и публикация двух образов с тегами `:<git-sha>` и `:latest`, затем развёртывание новых ревизий двух Yandex Serverless Containers (`metrics-backend` и `sandbox-frontend`). URL бэкенда после деплоя автоматически передаётся в сборку фронтенда как `VITE_API_URL`.
+
+### Требуемые секреты GitHub Actions
+
+| Секрет | Назначение |
+| --- | --- |
+| `YC_SA_JSON_CREDENTIALS` | Содержимое JSON-файла авторизованного ключа сервисного аккаунта `gh-deployer` |
+| `YC_REGISTRY_ID` | ID реестра Yandex Container Registry |
+| `YC_FOLDER_ID` | ID каталога в Yandex Cloud |
+| `YC_SC_INVOKER_SA_ID` | ID сервисного аккаунта, под которым Serverless Containers тянут образы из реестра |
+
+### Одноразовая настройка Yandex Cloud (через `yc` CLI)
+
+Все команды выполняются один раз вручную. Подставьте свой `<folder-id>`.
+
+```bash
+# Сервисный аккаунт для деплоя из GitHub Actions
+yc iam service-account create --name gh-deployer
+GH_SA_ID=$(yc iam service-account get --name gh-deployer --format json | jq -r .id)
+
+yc resource-manager folder add-access-binding <folder-id> \
+  --role container-registry.images.pusher --subject serviceAccount:$GH_SA_ID
+yc resource-manager folder add-access-binding <folder-id> \
+  --role serverless.containers.editor --subject serviceAccount:$GH_SA_ID
+yc resource-manager folder add-access-binding <folder-id> \
+  --role iam.serviceAccounts.user --subject serviceAccount:$GH_SA_ID
+
+# Авторизованный ключ -> положить в секрет YC_SA_JSON_CREDENTIALS
+yc iam key create --service-account-name gh-deployer -o key.json
+
+# Container Registry -> ID кладём в YC_REGISTRY_ID
+yc container registry create --name web-metrics-sandbox
+
+# Сервисный аккаунт-инвокер для Serverless Containers -> ID в YC_SC_INVOKER_SA_ID
+yc iam service-account create --name sc-invoker
+SC_SA_ID=$(yc iam service-account get --name sc-invoker --format json | jq -r .id)
+yc resource-manager folder add-access-binding <folder-id> \
+  --role container-registry.images.puller --subject serviceAccount:$SC_SA_ID
+
+# Пустые контейнеры (под них workflow деплоит ревизии)
+yc serverless container create --name metrics-backend
+yc serverless container create --name sandbox-frontend
+
+# Публичный доступ
+yc serverless container allow-unauthenticated-invoke metrics-backend
+yc serverless container allow-unauthenticated-invoke sandbox-frontend
 ```
 
 ## Практическая значимость

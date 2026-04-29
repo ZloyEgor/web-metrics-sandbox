@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Platform } from '../types';
+import type { Platform } from '../types';
 
 interface PlatformManagerModalProps {
   platform?: Platform; // If provided, edit mode; otherwise, add mode

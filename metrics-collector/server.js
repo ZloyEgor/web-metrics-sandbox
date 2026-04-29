@@ -2,10 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import lighthouse from 'lighthouse';
 import * as chromeLauncher from 'chrome-launcher';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 
-const execAsync = promisify(exec);
 const app = express();
 const PORT = process.env.PORT || 4000;
 
@@ -32,7 +29,8 @@ app.get('/api/lighthouse', async (req, res) => {
     
     // Launch Chrome
     chrome = await chromeLauncher.launch({
-      chromeFlags: ['--headless', '--no-sandbox', '--disable-gpu']
+      chromePath: process.env.CHROME_PATH || undefined,
+      chromeFlags: ['--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
     });
     
     // Run Lighthouse
@@ -143,108 +141,20 @@ app.get('/api/lighthouse', async (req, res) => {
   }
 });
 
-// Docker management endpoints
-app.get('/api/docker/status', async (req, res) => {
-  try {
-    const { stdout } = await execAsync('cd ../docker && docker-compose ps --format json', {
-      cwd: process.cwd()
-    });
-    
-    const containers = stdout.trim().split('\n')
-      .filter(line => line)
-      .map(line => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
-    
-    res.json({ containers });
-  } catch (error) {
-    console.error('Docker status error:', error);
-    res.status(500).json({ 
-      error: 'Failed to get Docker status',
-      message: error.message 
-    });
-  }
-});
+// Docker management endpoints are disabled in containerized deployments.
+// They previously shelled out to docker-compose against a sibling directory,
+// which is not available inside Serverless Containers.
+const dockerDisabled = (req, res) => {
+  res.status(503).json({
+    error: 'Docker management disabled in deployment',
+    message: 'The /api/docker/* endpoints are not available in this build.'
+  });
+};
 
-app.post('/api/docker/start/:platform', async (req, res) => {
-  const { platform } = req.params;
-  
-  try {
-    console.log(`Starting Docker container for ${platform}...`);
-    const { stdout, stderr } = await execAsync(
-      `cd ../docker && docker-compose up -d ${platform}`,
-      { cwd: process.cwd() }
-    );
-    
-    res.json({ 
-      success: true, 
-      platform,
-      message: `Container ${platform} started successfully`,
-      output: stdout || stderr
-    });
-  } catch (error) {
-    console.error(`Failed to start ${platform}:`, error);
-    res.status(500).json({ 
-      error: `Failed to start ${platform}`,
-      message: error.message 
-    });
-  }
-});
-
-app.post('/api/docker/stop/:platform', async (req, res) => {
-  const { platform } = req.params;
-  
-  try {
-    console.log(`Stopping Docker container for ${platform}...`);
-    const { stdout, stderr } = await execAsync(
-      `cd ../docker && docker-compose stop ${platform}`,
-      { cwd: process.cwd() }
-    );
-    
-    res.json({ 
-      success: true, 
-      platform,
-      message: `Container ${platform} stopped successfully`,
-      output: stdout || stderr
-    });
-  } catch (error) {
-    console.error(`Failed to stop ${platform}:`, error);
-    res.status(500).json({ 
-      error: `Failed to stop ${platform}`,
-      message: error.message 
-    });
-  }
-});
-
-app.post('/api/docker/restart/:platform', async (req, res) => {
-  const { platform } = req.params;
-  
-  try {
-    console.log(`Restarting Docker container for ${platform}...`);
-    const { stdout, stderr } = await execAsync(
-      `cd ../docker && docker-compose restart ${platform}`,
-      { cwd: process.cwd() }
-    );
-    
-    res.json({ 
-      success: true, 
-      platform,
-      message: `Container ${platform} restarted successfully`,
-      output: stdout || stderr
-    });
-  } catch (error) {
-    console.error(`Failed to restart ${platform}:`, error);
-    res.status(500).json({ 
-      error: `Failed to restart ${platform}`,
-      message: error.message 
-    });
-  }
-});
+app.get('/api/docker/status', dockerDisabled);
+app.post('/api/docker/start/:platform', dockerDisabled);
+app.post('/api/docker/stop/:platform', dockerDisabled);
+app.post('/api/docker/restart/:platform', dockerDisabled);
 
 app.listen(PORT, () => {
   console.log(`Metrics Collector API running on http://localhost:${PORT}`);

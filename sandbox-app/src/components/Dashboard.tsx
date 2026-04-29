@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Platform, PlatformStatus } from '../types';
+import type { Platform, PlatformStatus } from '../types';
 import { 
   getAllPlatforms, 
   getLatestMetrics, 
@@ -91,7 +91,7 @@ export default function Dashboard() {
       });
       
       if (response.ok) {
-        await loadPlatformStatuses();
+        await loadPlatformStatuses(platforms);
       }
     } catch (error) {
       console.error(`Failed to start ${platformId}:`, error);
@@ -105,14 +105,14 @@ export default function Dashboard() {
       });
       
       if (response.ok) {
-        await loadPlatformStatuses();
+        await loadPlatformStatuses(platforms);
       }
     } catch (error) {
       console.error(`Failed to stop ${platformId}:`, error);
     }
   };
 
-  const handleCollectMetrics = async (platformId: string) => {
+  const handleCollectMetrics = async (_platformId: string) => {
     // This will be handled by PlatformCard component
     await loadPlatforms();
   };

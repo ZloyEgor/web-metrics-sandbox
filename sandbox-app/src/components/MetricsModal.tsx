@@ -1,4 +1,4 @@
-import { MetricsRecord, Platform } from '../types';
+import type { MetricsRecord, Platform } from '../types';
 import MetricBadge from './MetricBadge';
 
 interface MetricsModalProps {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { MetricsRecord, Platform } from '../types';
+import type { MetricsRecord, Platform } from '../types';
 import { getMetricsByPlatform } from '../services/db';
 import {
   Chart as ChartJS,

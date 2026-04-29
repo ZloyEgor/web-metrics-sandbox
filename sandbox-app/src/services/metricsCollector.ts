@@ -1,8 +1,8 @@
-import { 
-  LighthouseMetrics, 
-  PerformanceMetrics, 
+import type {
+  LighthouseMetrics,
+  PerformanceMetrics,
   AvailabilityMetrics,
-  Platform 
+  Platform
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
@@ -181,7 +181,6 @@ export const collectAllMetrics = async (
   platform: Platform,
   onProgress?: (step: string, progress: number) => void
 ) => {
-  const steps = ['lighthouse', 'performance', 'availability'];
   const results: any = {};
   
   // Lighthouse
