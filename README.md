@@ -49,6 +49,11 @@ docker compose up --build
 - Frontend: http://localhost:8080
 - Backend:  http://localhost:4000
 
+### Известные ограничения облачной сборки
+
+- **Lighthouse** в Yandex Serverless Containers падает с `PROTOCOL_TIMEOUT`: DevTools Protocol, по которому Lighthouse общается с headless-Chromium через `localhost`-сокет, в этом окружении нестабильно работает. В локальной сборке через `docker compose` Lighthouse полностью функционален. В UI облачного фронтенда соответствующая часть отчёта может остаться пустой.
+- **Performance** и **Availability** работают и в облаке: бэкенд проксирует запросы к тестируемым URL, обходя `Mixed Content`-блокировку и `X-Frame-Options`.
+
 ## Контейнеризация
 
 Приложение состоит из двух самостоятельных образов:

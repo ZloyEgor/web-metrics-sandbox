@@ -14,24 +14,6 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: Date.now() });
 });
 
-// Debug: try to launch Chrome and immediately kill it. Used to diagnose
-// whether Chromium can run in the deployment environment at all.
-app.get('/api/debug/chrome', async (req, res) => {
-  let chrome;
-  const t0 = Date.now();
-  try {
-    chrome = await chromeLauncher.launch({
-      chromePath: process.env.CHROME_PATH || undefined,
-      chromeFlags: ['--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
-    });
-    res.json({ ok: true, port: chrome.port, launchMs: Date.now() - t0 });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message, launchMs: Date.now() - t0 });
-  } finally {
-    if (chrome) await chrome.kill().catch(() => {});
-  }
-});
-
 // Lighthouse metrics endpoint.
 // Streams keep-alive whitespace while Lighthouse runs so intermediate
 // proxies (e.g. Yandex Serverless Containers' frontend) don't drop the

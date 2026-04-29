@@ -96,10 +96,9 @@ jobs:
             --container-name metrics-backend \
             --image "${REGISTRY}/metrics-backend:${IMAGE_TAG}" \
             --memory 2GB \
-            --cores 2 \
+            --cores 1 \
             --execution-timeout 300s \
             --concurrency 1 \
-            --min-instances 1 \
             --service-account-id "$SC_INVOKER_SA_ID"
 
       - name: Resolve backend URL
