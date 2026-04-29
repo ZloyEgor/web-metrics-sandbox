@@ -99,6 +99,7 @@ jobs:
             --cores 2 \
             --execution-timeout 300s \
             --concurrency 1 \
+            --min-instances 1 \
             --service-account-id "$SC_INVOKER_SA_ID"
 
       - name: Resolve backend URL
