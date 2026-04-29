@@ -56,124 +56,177 @@ export const collectLighthouseMetrics = async (
   }
 };
 
-// Performance metrics collection using Performance API
+// Performance metrics collection.
+// Strategy:
+//   1. Try to load the page in a hidden iframe (gives detailed Performance API
+//      timings if same-origin). Many target sites block this with
+//      X-Frame-Options / CSP frame-ancestors -> onload never fires.
+//   2. After a short timeout fall back to a no-cors fetch and just measure
+//      the time-to-response so we still produce a sensible loadTime.
+const IFRAME_TIMEOUT_MS = 8000;
+const FETCH_FALLBACK_TIMEOUT_MS = 15000;
+
+const tryIframePerformance = (url: string): Promise<PerformanceMetrics | null> =>
+  new Promise((resolve) => {
+    const startTime = performance.now();
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+
+    let settled = false;
+    const cleanup = () => {
+      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+    };
+
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(null);
+    }, IFRAME_TIMEOUT_MS);
+
+    iframe.onload = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      const loadTime = performance.now() - startTime;
+
+      try {
+        const iframePerf = iframe.contentWindow?.performance;
+        if (iframePerf) {
+          const navigation = iframePerf.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+          const paint = iframePerf.getEntriesByType('paint');
+          const fcp = paint.find(p => p.name === 'first-contentful-paint');
+          const memory = (performance as any).memory;
+
+          cleanup();
+          resolve({
+            fcp: fcp?.startTime,
+            loadTime,
+            domContentLoaded: navigation
+              ? navigation.domContentLoadedEventEnd - navigation.domContentLoadedEventStart
+              : 0,
+            memoryUsage: memory ? memory.usedJSHeapSize : undefined
+          });
+          return;
+        }
+      } catch {
+        // Cross-origin iframe access denied; fall through to basic metrics.
+      }
+
+      cleanup();
+      resolve({ loadTime, domContentLoaded: 0 });
+    };
+
+    iframe.onerror = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      cleanup();
+      resolve(null);
+    };
+
+    iframe.src = url;
+  });
+
+const fetchPerformanceFallback = async (url: string): Promise<PerformanceMetrics | null> => {
+  const startTime = performance.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_FALLBACK_TIMEOUT_MS);
+  try {
+    await fetch(url, { mode: 'no-cors', cache: 'no-cache', signal: controller.signal });
+    return { loadTime: performance.now() - startTime, domContentLoaded: 0 };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 export const collectPerformanceMetrics = async (
   platform: Platform
 ): Promise<PerformanceMetrics | null> => {
   try {
     const url = getPlatformUrl(platform);
-    const startTime = performance.now();
-    
-    // Create a hidden iframe to load the platform
-    const iframe = document.createElement('iframe');
-    iframe.style.display = 'none';
-    document.body.appendChild(iframe);
-    
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        document.body.removeChild(iframe);
-        resolve(null);
-      }, 30000); // 30 second timeout
-      
-      iframe.onload = () => {
-        clearTimeout(timeout);
-        const loadTime = performance.now() - startTime;
-        
-        try {
-          // Try to get performance metrics from iframe if same-origin
-          const iframePerf = iframe.contentWindow?.performance;
-          
-          if (iframePerf) {
-            const navigation = iframePerf.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
-            const paint = iframePerf.getEntriesByType('paint');
-            
-            const fcp = paint.find(p => p.name === 'first-contentful-paint');
-            const memory = (performance as any).memory;
-            
-            const metrics: PerformanceMetrics = {
-              fcp: fcp?.startTime,
-              loadTime: loadTime,
-              domContentLoaded: navigation?.domContentLoadedEventEnd - navigation?.domContentLoadedEventStart || 0,
-              memoryUsage: memory ? memory.usedJSHeapSize : undefined
-            };
-            
-            document.body.removeChild(iframe);
-            resolve(metrics);
-          } else {
-            // Cross-origin, just return basic load time
-            const metrics: PerformanceMetrics = {
-              loadTime: loadTime,
-              domContentLoaded: 0
-            };
-            
-            document.body.removeChild(iframe);
-            resolve(metrics);
-          }
-        } catch (error) {
-          console.warn('Could not access iframe performance:', error);
-          const metrics: PerformanceMetrics = {
-            loadTime: loadTime,
-            domContentLoaded: 0
-          };
-          
-          document.body.removeChild(iframe);
-          resolve(metrics);
-        }
-      };
-      
-      iframe.onerror = () => {
-        clearTimeout(timeout);
-        document.body.removeChild(iframe);
-        resolve(null);
-      };
-      
-      iframe.src = url;
-    });
+    const iframeMetrics = await tryIframePerformance(url);
+    if (iframeMetrics) return iframeMetrics;
+    return await fetchPerformanceFallback(url);
   } catch (error) {
     console.error(`Failed to collect performance metrics for ${platform.name}:`, error);
     return null;
   }
 };
 
-// Availability/Health check
+// Availability/Health check.
+// We try a no-cors fetch first; for sites that block it (e.g. mixed-content
+// http redirect from an https origin) we fall back to an <img> ping which
+// browsers permit cross-origin.
+const AVAILABILITY_TIMEOUT_MS = 10000;
+
+const imagePing = (url: string, timeoutMs: number): Promise<boolean> =>
+  new Promise((resolve) => {
+    const img = new Image();
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      img.src = '';
+      resolve(false);
+    }, timeoutMs);
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    // Any response (even an HTML page that fails to decode as image)
+    // means the host is reachable. Network errors trigger onerror without load.
+    img.onload = () => finish(true);
+    img.onerror = () => finish(true);
+    img.src = url + (url.includes('?') ? '&' : '?') + '_p=' + Date.now();
+  });
+
 export const collectAvailabilityMetrics = async (
   platform: Platform
 ): Promise<AvailabilityMetrics> => {
   const startTime = performance.now();
-  
+  const baseUrl = getPlatformUrl(platform);
+  const url = platform.healthCheck ? `${baseUrl}${platform.healthCheck}` : baseUrl;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AVAILABILITY_TIMEOUT_MS);
   try {
-    const baseUrl = getPlatformUrl(platform);
-    // Use health check if available, otherwise check main URL
-    const url = platform.healthCheck ? `${baseUrl}${platform.healthCheck}` : baseUrl;
-    
     const response = await fetch(url, {
       method: 'GET',
-      mode: 'no-cors', // Use no-cors for external URLs to avoid CORS issues
-      cache: 'no-cache'
+      mode: 'no-cors',
+      cache: 'no-cache',
+      signal: controller.signal
     });
-    
     const responseTime = performance.now() - startTime;
-    
-    // For no-cors mode, response.ok might not work, so check type
     const isOnline = response.type === 'opaque' || response.ok;
-    
-    return {
-      status: isOnline ? 'online' : 'offline',
-      httpStatus: response.status || 200, // opaque responses have status 0
-      responseTime: Math.round(responseTime),
-      uptime: isOnline ? 100 : 0,
-      lastCheck: Date.now()
-    };
-  } catch (error) {
-    const responseTime = performance.now() - startTime;
-    
-    return {
-      status: 'offline',
-      responseTime: Math.round(responseTime),
-      uptime: 0,
-      lastCheck: Date.now()
-    };
+    if (isOnline) {
+      return {
+        status: 'online',
+        httpStatus: response.status || 200,
+        responseTime: Math.round(responseTime),
+        uptime: 100,
+        lastCheck: Date.now()
+      };
+    }
+  } catch {
+    // fall through to image-ping fallback
+  } finally {
+    clearTimeout(timer);
   }
+
+  const ok = await imagePing(url, AVAILABILITY_TIMEOUT_MS);
+  const responseTime = performance.now() - startTime;
+  return {
+    status: ok ? 'online' : 'offline',
+    responseTime: Math.round(responseTime),
+    uptime: ok ? 100 : 0,
+    lastCheck: Date.now()
+  };
 };
 
 // Collect all metrics for a platform with progress tracking

@@ -1,33 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { MetricsRecord, Platform } from '../types';
 import { getMetricsByPlatform } from '../services/db';
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  BarElement,
-  RadialLinearScale,
-  Title,
-  Tooltip,
-  Legend,
-  Filler
-} from 'chart.js';
 import { Line, Bar, Radar } from 'react-chartjs-2';
-
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  BarElement,
-  RadialLinearScale,
-  Title,
-  Tooltip,
-  Legend,
-  Filler
-);
 
 interface MetricsDashboardProps {
   platform: Platform;
