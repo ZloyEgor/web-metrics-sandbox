@@ -49,69 +49,97 @@ docker compose up --build
 - Frontend: http://localhost:8080
 - Backend:  http://localhost:4000
 
-### Известные ограничения облачной сборки
-
-- **Lighthouse** в Yandex Serverless Containers падает с `PROTOCOL_TIMEOUT`: DevTools Protocol, по которому Lighthouse общается с headless-Chromium через `localhost`-сокет, в этом окружении нестабильно работает. В локальной сборке через `docker compose` Lighthouse полностью функционален. В UI облачного фронтенда соответствующая часть отчёта может остаться пустой.
-- **Performance** и **Availability** работают и в облаке: бэкенд проксирует запросы к тестируемым URL, обходя `Mixed Content`-блокировку и `X-Frame-Options`.
-
 ## Контейнеризация
 
 Приложение состоит из двух самостоятельных образов:
 
-- `metrics-collector/Dockerfile` — Node.js 20 на базе Debian slim с установленным Chromium для запуска Lighthouse. Слушает порт `4000`. Эндпоинты `/api/docker/*` в этой сборке отключены (возвращают `503`), поскольку они полагаются на наличие сокета Docker рядом с процессом.
+- `metrics-collector/Dockerfile` — Node.js 20 на базе Debian slim с установленным Chromium для запуска Lighthouse. Слушает порт, заданный переменной `PORT` (8080 в Dockerfile, 4000 в локальном compose).
 - `sandbox-app/Dockerfile` — мультистадийная сборка: Node 20 для `npm run build`, затем `nginx:1.27-alpine` для отдачи статики на порту `8080`. URL бэкенда задаётся build-time аргументом `VITE_API_URL` и встраивается в собранный SPA.
+
+## Облачная архитектура
+
+```
+                                                            ┌──────────────────────────┐
+   Browser ── https ── sandbox-frontend ── https ──┬───────►│ Caddy (LE TLS)           │
+                       (YC Serverless Container)   │  TCP/443│   ↓ reverse_proxy       │
+                                                   │        │ metrics-backend          │
+                                                   │        │   (Express + Lighthouse) │
+                                                   ▼        └──────────────────────────┘
+                                          backend.<ip>.sslip.io
+                                                   ▲
+                                                   │
+                                          Yandex Compute VM
+                                          (Ubuntu 22.04, Docker, docker compose)
+```
+
+- **Frontend** — Yandex Serverless Container `sandbox-frontend`, статика на nginx; HTTPS из коробки.
+- **Backend** — Yandex Compute VM. На ВМ запущен docker compose стек ([deploy/vm/docker-compose.yml](deploy/vm/docker-compose.yml)) из двух сервисов: Caddy для TLS-терминирования (Let's Encrypt по `<host>.sslip.io`) и `metrics-backend` контейнер из YCR. ВМ авторизуется в YCR по IAM-токену из метадаты (сервисный аккаунт `vm-runner` с ролью `images.puller`); таймер `yc-cr-login.timer` обновляет токен ежечасно. Lighthouse полностью функционален.
 
 ## CI/CD
 
-Конвейер описан в [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml) и состоит из двух джоб:
+Конвейер описан в [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml) и состоит из трёх джоб:
 
 1. `lint-build` — выполняется на каждый push и pull request: `npm ci`, `npm run lint`, `npm run build` для фронтенда и `node --check server.js` для бэкенда.
-2. `deploy` — выполняется только при push в `main`: логин в Yandex Container Registry, сборка и публикация двух образов с тегами `:<git-sha>` и `:latest`, затем развёртывание новых ревизий двух Yandex Serverless Containers (`metrics-backend` и `sandbox-frontend`). URL бэкенда после деплоя автоматически передаётся в сборку фронтенда как `VITE_API_URL`.
+2. `deploy-backend` (push в `main`): сборка образа `metrics-backend`, push в Yandex Container Registry, заливка `deploy/vm/docker-compose.yml` и `Caddyfile` на ВМ через scp, затем `docker compose pull && up -d` по SSH.
+3. `deploy-frontend` (push в `main`): сборка фронтенда с build-arg `VITE_API_URL=https://${BACKEND_HOSTNAME}` и деплой ревизии Serverless Container.
 
 ### Требуемые секреты GitHub Actions
 
 | Секрет | Назначение |
 | --- | --- |
-| `YC_SA_JSON_CREDENTIALS` | Содержимое JSON-файла авторизованного ключа сервисного аккаунта `gh-deployer` |
+| `YC_SA_JSON_CREDENTIALS` | JSON-ключ сервисного аккаунта `gh-deployer` (push в YCR + деплой Serverless Container) |
 | `YC_REGISTRY_ID` | ID реестра Yandex Container Registry |
 | `YC_FOLDER_ID` | ID каталога в Yandex Cloud |
-| `YC_SC_INVOKER_SA_ID` | ID сервисного аккаунта, под которым Serverless Containers тянут образы из реестра |
+| `YC_SC_INVOKER_SA_ID` | ID сервисного аккаунта, под которым Serverless Container тянет образы (фронтенд) |
+| `VM_HOST` | Внешний IP Compute VM с бэкендом |
+| `BACKEND_HOSTNAME` | DNS-имя бэкенда, например `backend.111-88-250-26.sslip.io` (используется и Caddy, и фронтендом) |
+| `VM_SSH_PRIVATE_KEY` | Приватный SSH-ключ пользователя `deploy` на ВМ |
 
-### Одноразовая настройка Yandex Cloud (через `yc` CLI)
-
-Все команды выполняются один раз вручную. Подставьте свой `<folder-id>`.
+### Одноразовая настройка Yandex Cloud
 
 ```bash
-# Сервисный аккаунт для деплоя из GitHub Actions
+FOLDER_ID=$(yc config get folder-id)
+
+# 1. Сервисные аккаунты
 yc iam service-account create --name gh-deployer
+yc iam service-account create --name sc-invoker
+yc iam service-account create --name vm-runner
 GH_SA_ID=$(yc iam service-account get --name gh-deployer --format json | jq -r .id)
+SC_SA_ID=$(yc iam service-account get --name sc-invoker --format json | jq -r .id)
+VM_SA_ID=$(yc iam service-account get --name vm-runner --format json | jq -r .id)
 
-yc resource-manager folder add-access-binding <folder-id> \
-  --role container-registry.images.pusher --subject serviceAccount:$GH_SA_ID
-yc resource-manager folder add-access-binding <folder-id> \
-  --role serverless.containers.editor --subject serviceAccount:$GH_SA_ID
-yc resource-manager folder add-access-binding <folder-id> \
-  --role iam.serviceAccounts.user --subject serviceAccount:$GH_SA_ID
+# Роли
+for r in container-registry.images.pusher serverless.containers.editor iam.serviceAccounts.user; do
+  yc resource-manager folder add-access-binding "$FOLDER_ID" \
+    --role $r --subject serviceAccount:$GH_SA_ID
+done
+yc resource-manager folder add-access-binding "$FOLDER_ID" \
+  --role container-registry.images.puller --subject serviceAccount:$SC_SA_ID
+yc resource-manager folder add-access-binding "$FOLDER_ID" \
+  --role container-registry.images.puller --subject serviceAccount:$VM_SA_ID
 
-# Авторизованный ключ -> положить в секрет YC_SA_JSON_CREDENTIALS
+# JSON-ключ для GitHub
 yc iam key create --service-account-name gh-deployer -o key.json
 
-# Container Registry -> ID кладём в YC_REGISTRY_ID
+# 2. Container Registry
 yc container registry create --name web-metrics-sandbox
 
-# Сервисный аккаунт-инвокер для Serverless Containers -> ID в YC_SC_INVOKER_SA_ID
-yc iam service-account create --name sc-invoker
-SC_SA_ID=$(yc iam service-account get --name sc-invoker --format json | jq -r .id)
-yc resource-manager folder add-access-binding <folder-id> \
-  --role container-registry.images.puller --subject serviceAccount:$SC_SA_ID
-
-# Пустые контейнеры (под них workflow деплоит ревизии)
-yc serverless container create --name metrics-backend
+# 3. Frontend Serverless Container
 yc serverless container create --name sandbox-frontend
-
-# Публичный доступ
-yc serverless container allow-unauthenticated-invoke metrics-backend
 yc serverless container allow-unauthenticated-invoke sandbox-frontend
+
+# 4. Compute VM с cloud-init (см. deploy/vm/cloud-init.yaml в репозитории)
+ssh-keygen -t ed25519 -N "" -C "github-actions-deploy" -f ~/.ssh/web-metrics-vm
+# Подставь публичный ключ в cloud-init и создай ВМ:
+yc compute instance create \
+  --name metrics-backend-vm \
+  --zone ru-central1-a \
+  --platform standard-v3 \
+  --cores 2 --memory 2GB --core-fraction 100 \
+  --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2204-lts,size=20GB,type=network-ssd \
+  --network-interface subnet-id=<your-subnet>,nat-ip-version=ipv4 \
+  --service-account-id $VM_SA_ID \
+  --metadata-from-file user-data=deploy/vm/cloud-init.yaml
 ```
 
 ## Практическая значимость

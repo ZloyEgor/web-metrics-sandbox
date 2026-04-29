@@ -1,0 +1,73 @@
+#cloud-config
+# Bootstrap a Yandex Compute VM to run the metrics-backend container.
+# Replace ssh_authorized_keys with the public key whose private half
+# you'll store in the VM_SSH_PRIVATE_KEY GitHub secret.
+users:
+  - name: deploy
+    groups: [sudo, docker]
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY github-actions-deploy
+
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+
+write_files:
+  - path: /etc/docker/daemon.json
+    permissions: '0644'
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "10m", "max-file": "3" }
+      }
+  - path: /home/deploy/yc-cr-login.sh
+    permissions: '0755'
+    owner: deploy:deploy
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      TOKEN=$(curl -sf -H 'Metadata-Flavor: Google' \
+        http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token \
+        | jq -r .access_token)
+      echo "$TOKEN" | docker login --username iam --password-stdin cr.yandex >/dev/null
+      echo "logged in to cr.yandex at $(date -Is)"
+  - path: /etc/systemd/system/yc-cr-login.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Refresh Yandex Container Registry docker login
+      After=docker.service
+      Requires=docker.service
+      [Service]
+      Type=oneshot
+      User=deploy
+      ExecStart=/home/deploy/yc-cr-login.sh
+  - path: /etc/systemd/system/yc-cr-login.timer
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Hourly refresh of YCR docker login
+      [Timer]
+      OnBootSec=2min
+      OnUnitActiveSec=1h
+      Persistent=true
+      [Install]
+      WantedBy=timers.target
+
+runcmd:
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - bash -c 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list'
+  - apt-get update -y
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable --now docker
+  - install -d -o deploy -g deploy /home/deploy/stack
+  - systemctl daemon-reload
+  - systemctl enable --now yc-cr-login.timer
+  - systemctl start yc-cr-login.service

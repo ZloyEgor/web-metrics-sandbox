@@ -1,0 +1,14 @@
+# Caddy reverse proxy with automatic Let's Encrypt for the metrics
+# backend. The hostname is templated from the BACKEND_HOSTNAME env var
+# (e.g. backend.111-88-250-26.sslip.io) so the ACME HTTP-01 challenge
+# resolves to this host.
+{$BACKEND_HOSTNAME} {
+    encode gzip
+    reverse_proxy backend:8080 {
+        transport http {
+            response_header_timeout 10m
+            read_timeout 10m
+        }
+        flush_interval -1
+    }
+}
